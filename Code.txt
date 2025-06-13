@@ -1,0 +1,88 @@
+# Install required libraries
+!pip install sdv diffprivlib tensorflow pandas numpy
+
+# Import libraries
+import numpy as np
+import pandas as pd
+from sdv.metadata.single_table import SingleTableMetadata
+from sdv.single_table import TVAESynthesizer
+from diffprivlib.mechanisms import Laplace
+from sklearn.metrics import accuracy_score
+from scipy.stats import ks_2samp
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from google.colab import files
+
+# Upload dataset
+print("Please upload your data.csv file:")
+uploaded = files.upload()
+real_data = pd.read_csv(next(iter(uploaded.keys())))
+
+# Preprocess data: Encode non-numerical columns
+print("Preprocessing: Encoding non-numerical columns...")
+for col in real_data.columns:
+    if not np.issubdtype(real_data[col].dtype, np.number):
+        # Encode non-numerical column with Label Encoding
+        real_data[col] = real_data[col].astype('category').cat.codes
+
+print(f"Dataset preprocessed successfully. Shape: {real_data.shape}")
+
+# Step 1: Create metadata for the dataset
+print("Generating metadata for the dataset...")
+metadata = SingleTableMetadata()
+metadata.detect_from_dataframe(data=real_data)
+
+# Step 2: TVAE for synthetic data generation
+print("Training TVAE model using the latest SDV version...")
+synthesizer = TVAESynthesizer(metadata)
+synthesizer.fit(real_data)
+tvae_data = synthesizer.sample(num_rows=len(real_data))
+print("TVAE synthetic data generation completed.")
+
+# Step 3: GAN example (simplified, for demonstration purposes)
+def build_generator(input_dim, output_dim):
+    model = Sequential([
+        Dense(128, activation='relu', input_dim=input_dim),
+        Dense(output_dim, activation='sigmoid')
+    ])
+    return model
+
+def build_discriminator(input_dim):
+    model = Sequential([
+        Dense(128, activation='relu', input_dim=input_dim),
+        Dense(1, activation='sigmoid')
+    ])
+    return model
+
+# For demonstration purposes, use TVAE-generated data as GAN data
+gan_data = tvae_data
+
+# Merge TVAE and GAN outputs
+print("Merging TVAE and GAN outputs...")
+synth_data = (tvae_data + gan_data) / 2
+
+# Continuous Quality Validation (CQV)
+print("Validating statistical similarity using KS test...")
+for column in real_data.columns:
+    stat, p_value = ks_2samp(real_data[column], synth_data[column])
+    print(f"{column}: KS test p-value: {p_value:.4f}")
+
+# Smart Privacy Module (SPM)
+def add_noise(data, epsilon=1.0, sensitivity=1.0):
+    """Apply differential privacy noise using the Laplace mechanism."""
+    mech = Laplace(epsilon=epsilon, sensitivity=sensitivity)
+    noisy_data = data.copy()
+    for col in noisy_data.columns:
+        if np.issubdtype(noisy_data[col].dtype, np.number):
+            noisy_data[col] = noisy_data[col].apply(mech.randomise)
+    return noisy_data
+
+epsilon = 1.0
+sensitivity = 1.0  # Adjust based on your data and queries
+print(f"Applying differential privacy with epsilon={epsilon} and sensitivity={sensitivity}...")
+private_synth_data = add_noise(synth_data, epsilon=epsilon, sensitivity=sensitivity)
+
+# Save and download the synthetic data
+private_synth_data.to_csv('synthetic_data.csv', index=False)
+print("Synthetic data saved as 'synthetic_data.csv'. Downloading now...")
+files.download('synthetic_data.csv')
